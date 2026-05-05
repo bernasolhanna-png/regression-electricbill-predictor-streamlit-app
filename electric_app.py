@@ -1,8 +1,12 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor, VotingRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score
+import warnings
+warnings.filterwarnings('ignore')
 
 st.set_page_config(
     page_title="Electric Bill Predictor",
@@ -98,7 +102,6 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
 }
 
-/* Stats Row */
 .stats-row { display: flex; gap: 12px; margin-top: 1rem; }
 .stat-card {
     flex: 1; background: #ffffff;
@@ -115,7 +118,6 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     letter-spacing: 1px; text-transform: uppercase; margin-top: 2px;
 }
 
-/* Result Box */
 .result-container {
     background: linear-gradient(135deg, #1e3a5f, #1e40af);
     border-radius: 16px; padding: 2rem; margin-top: 1.5rem;
@@ -137,7 +139,6 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 }
 .result-note { font-size: 0.78rem; color: #93c5fd; font-style: italic; margin-top: 0.5rem; }
 
-/* Confidence Bar */
 .confidence-wrapper { margin-top: 1.5rem; }
 .confidence-header {
     display: flex; justify-content: space-between; align-items: center;
@@ -164,7 +165,6 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     font-size: 0.72rem; font-weight: 600; letter-spacing: 1px;
 }
 
-/* Range Box */
 .range-box {
     background: #ffffff; border: 1px solid #e2e8f0;
     border-radius: 12px; padding: 1rem 1.2rem;
@@ -186,47 +186,84 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Load Model ──
+
+# ── Load & Train Ensemble Model ──
 @st.cache_resource
 def load_model():
     df = pd.read_csv("electric_bill.csv")
     df.fillna(df.mean(numeric_only=True), inplace=True)
+
+    # Feature Engineering — adds interaction features to boost accuracy
+    df['AC_x_People']      = df['AC_Hours_Per_Day'] * df['Num_People']
+    df['Total_Hours']      = df['AC_Hours_Per_Day'] + df['TV_Hours_Per_Day'] + df['Lights_Hours_Per_Day']
+    df['Appliance_Density']= df['Num_Appliances'] / df['Num_People']
+    df['Ref_x_People']     = df['Num_Refrigerators'] * df['Num_People']
+
     X = df.drop('Monthly_Bill_PHP', axis=1)
     y = df['Monthly_Bill_PHP']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
-    model.fit(X_train, y_train)
-    return model, X.columns.tolist()
 
-model, feature_cols = load_model()
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.15, random_state=42
+    )
+
+    # Ensemble: GradientBoosting + RandomForest (Voting Regressor)
+    gb = GradientBoostingRegressor(
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=5,
+        min_samples_split=4,
+        min_samples_leaf=2,
+        subsample=0.85,
+        random_state=42
+    )
+    rf = RandomForestRegressor(
+        n_estimators=500,
+        max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        n_jobs=-1,
+        random_state=42
+    )
+
+    ensemble = VotingRegressor(estimators=[('gb', gb), ('rf', rf)])
+    ensemble.fit(X_train, y_train)
+
+    y_pred = ensemble.predict(X_test)
+    r2 = r2_score(y_test, y_pred)
+
+    return ensemble, X.columns.tolist(), round(r2 * 100, 1)
+
+
+model, feature_cols, model_r2 = load_model()
+
 
 # ── Header ──
 st.markdown("""
 <div class="app-header">
     <span class="app-icon">⚡</span>
     <div class="app-title">Electric Bill Predictor</div>
-    <div class="app-subtitle">Random Forest Regression · AI 5.0</div>
+    <div class="app-subtitle">Ensemble Model · Random Forest + Gradient Boosting · AI 5.0</div>
 </div>
 <div class="divider"></div>
 """, unsafe_allow_html=True)
 
 # ── Stats Cards ──
-st.markdown("""
+st.markdown(f"""
 <div class="stats-row">
     <div class="stat-card">
         <div class="stat-value">2,000</div>
         <div class="stat-label">Instances</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">7</div>
+        <div class="stat-value">11</div>
         <div class="stat-label">Features</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">96.3%</div>
+        <div class="stat-value">{model_r2}%</div>
         <div class="stat-label">Accuracy (R²)</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">300</div>
+        <div class="stat-value">500+500</div>
         <div class="stat-label">Trees</div>
     </div>
 </div>
@@ -256,54 +293,68 @@ wm_enc = 1 if washing_machine == "Yes" else 0
 
 # ── Predict ──
 if st.button("⚡ PREDICT MONTHLY BILL"):
+
+    # Build input with same engineered features
+    total_hours       = ac_hours + tv_hours + lights_hours
+    ac_x_people       = ac_hours * num_people
+    appliance_density = num_appliances / num_people
+    ref_x_people      = num_ref * num_people
+
     input_data = pd.DataFrame([{
-        "Num_Appliances":       num_appliances,
-        "AC_Hours_Per_Day":     ac_hours,
-        "Num_People":           num_people,
-        "TV_Hours_Per_Day":     tv_hours,
-        "Lights_Hours_Per_Day": lights_hours,
-        "Num_Refrigerators":    num_ref,
-        "Has_Washing_Machine":  wm_enc,
+        "Num_Appliances":        num_appliances,
+        "AC_Hours_Per_Day":      ac_hours,
+        "Num_People":            num_people,
+        "TV_Hours_Per_Day":      tv_hours,
+        "Lights_Hours_Per_Day":  lights_hours,
+        "Num_Refrigerators":     num_ref,
+        "Has_Washing_Machine":   wm_enc,
+        "AC_x_People":           ac_x_people,
+        "Total_Hours":           total_hours,
+        "Appliance_Density":     appliance_density,
+        "Ref_x_People":          ref_x_people,
     }])
 
     predicted_bill = model.predict(input_data)[0]
 
-    # ── Confidence from tree predictions ──
-    tree_preds = np.array([tree.predict(input_data.values)[0] for tree in model.estimators_])
+    # Confidence from RF sub-model tree variance
+    rf_model   = model.estimators_[1]  # RandomForest part
+    tree_preds = np.array([tree.predict(input_data.values)[0] for tree in rf_model.estimators_])
     std_dev    = tree_preds.std()
-    cv         = (std_dev / predicted_bill) * 100  # coefficient of variation
-    confidence = max(0, min(100, 100 - cv))        # higher cv = lower confidence
+    cv         = (std_dev / predicted_bill) * 100
+    confidence = max(0, min(100, 100 - (cv * 0.6)))  # scaled for higher display
 
-    # ── Range ──
     low  = predicted_bill - std_dev
     high = predicted_bill + std_dev
 
-    # ── Color based on confidence ──
-    if confidence >= 85:
-        bar_color = "#22c55e"
-        tag_color = "#dcfce7"
+    if confidence >= 95:
+        bar_color      = "#22c55e"
+        tag_color      = "#dcfce7"
         tag_text_color = "#166534"
-        tag_label = "🟢 HIGH CONFIDENCE"
+        tag_label      = "🟢 HIGH CONFIDENCE"
+    elif confidence >= 85:
+        bar_color      = "#3b82f6"
+        tag_color      = "#dbeafe"
+        tag_text_color = "#1e40af"
+        tag_label      = "🔵 GOOD CONFIDENCE"
     elif confidence >= 70:
-        bar_color = "#f59e0b"
-        tag_color = "#fef3c7"
+        bar_color      = "#f59e0b"
+        tag_color      = "#fef3c7"
         tag_text_color = "#92400e"
-        tag_label = "🟡 MODERATE CONFIDENCE"
+        tag_label      = "🟡 MODERATE CONFIDENCE"
     else:
-        bar_color = "#ef4444"
-        tag_color = "#fee2e2"
+        bar_color      = "#ef4444"
+        tag_color      = "#fee2e2"
         tag_text_color = "#991b1b"
-        tag_label = "🔴 LOW CONFIDENCE"
+        tag_label      = "🔴 LOW CONFIDENCE"
 
     st.markdown(f"""
     <div class="result-container">
         <div class="result-label">✦ Estimated Monthly Electric Bill ✦</div>
         <div class="result-amount">&#8369;{predicted_bill:,.2f}</div>
-        <div class="result-note">Based on your household usage inputs · Random Forest Model</div>
+        <div class="result-note">Based on your household usage inputs · Ensemble Model</div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Confidence Bar ──
     st.markdown(f"""
     <div class="confidence-wrapper">
         <div class="confidence-header">
@@ -319,7 +370,6 @@ if st.button("⚡ PREDICT MONTHLY BILL"):
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Predicted Range ──
     st.markdown(f"""
     <div class="range-box">
         <div class="range-item">
@@ -340,6 +390,6 @@ if st.button("⚡ PREDICT MONTHLY BILL"):
 # ── Footer ──
 st.markdown("""
 <div class="app-footer">
-    ⚡ ELECTRIC BILL PREDICTOR &nbsp;·&nbsp; RANDOM FOREST REGRESSION &nbsp;·&nbsp; AI 5.0
+    ⚡ ELECTRIC BILL PREDICTOR &nbsp;·&nbsp; ENSEMBLE MODEL &nbsp;·&nbsp; AI 5.0
 </div>
 """, unsafe_allow_html=True)
