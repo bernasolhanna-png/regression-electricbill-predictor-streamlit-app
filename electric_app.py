@@ -255,7 +255,7 @@ st.markdown(f"""
         <div class="stat-label">Instances</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">11</div>
+        <div class="stat-value">7</div>
         <div class="stat-label">Features</div>
     </div>
     <div class="stat-card">
@@ -263,7 +263,7 @@ st.markdown(f"""
         <div class="stat-label">Accuracy (R²)</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">500+500</div>
+        <div class="stat-value">1000</div>
         <div class="stat-label">Trees</div>
     </div>
 </div>
