@@ -292,7 +292,7 @@ num_people = st.number_input("Number of People in the House", min_value=1, max_v
 wm_enc = 1 if washing_machine == "Yes" else 0
 
 # ── Predict ──
-if st.button("PREDICT MONTHLY BILL"):
+if st.button(" ⚡PREDICT MONTHLY BILL "):
 
     # Build input with same engineered features
     total_hours       = ac_hours + tv_hours + lights_hours
