@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor, VotingRegressor, ExtraTreesRegressor
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor, VotingRegressor
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score
 import warnings
 warnings.filterwarnings('ignore')
@@ -192,17 +193,11 @@ def load_model():
     df = pd.read_csv("electric_bill.csv")
     df.fillna(df.mean(numeric_only=True), inplace=True)
 
-    # Feature Engineering — richer interaction features for higher accuracy
-    df['AC_x_People']        = df['AC_Hours_Per_Day'] * df['Num_People']
-    df['Total_Hours']        = df['AC_Hours_Per_Day'] + df['TV_Hours_Per_Day'] + df['Lights_Hours_Per_Day']
-    df['Appliance_Density']  = df['Num_Appliances'] / df['Num_People']
-    df['Ref_x_People']       = df['Num_Refrigerators'] * df['Num_People']
-    df['AC_sq']              = df['AC_Hours_Per_Day'] ** 2
-    df['Appliance_x_AC']     = df['Num_Appliances'] * df['AC_Hours_Per_Day']
-    df['WM_x_People']        = df['Has_Washing_Machine'] * df['Num_People']
-    df['Lights_x_Appliance'] = df['Lights_Hours_Per_Day'] * df['Num_Appliances']
-    df['TV_x_People']        = df['TV_Hours_Per_Day'] * df['Num_People']
-    df['Ref_x_AC']           = df['Num_Refrigerators'] * df['AC_Hours_Per_Day']
+    # Feature Engineering — adds interaction features to boost accuracy
+    df['AC_x_People']      = df['AC_Hours_Per_Day'] * df['Num_People']
+    df['Total_Hours']      = df['AC_Hours_Per_Day'] + df['TV_Hours_Per_Day'] + df['Lights_Hours_Per_Day']
+    df['Appliance_Density']= df['Num_Appliances'] / df['Num_People']
+    df['Ref_x_People']     = df['Num_Refrigerators'] * df['Num_People']
 
     X = df.drop('Monthly_Bill_PHP', axis=1)
     y = df['Monthly_Bill_PHP']
@@ -211,22 +206,26 @@ def load_model():
         X, y, test_size=0.15, random_state=42
     )
 
-    # 3-Model Ensemble: GradientBoosting + RandomForest + ExtraTrees
+    # Ensemble: GradientBoosting + RandomForest (Voting Regressor)
     gb = GradientBoostingRegressor(
-        n_estimators=1000, learning_rate=0.02,
-        max_depth=7, min_samples_split=2,
-        min_samples_leaf=1, subsample=0.9, random_state=42
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=5,
+        min_samples_split=4,
+        min_samples_leaf=2,
+        subsample=0.85,
+        random_state=42
     )
     rf = RandomForestRegressor(
-        n_estimators=1000, max_depth=None,
-        min_samples_leaf=1, n_jobs=-1, random_state=42
-    )
-    et = ExtraTreesRegressor(
-        n_estimators=1000, max_depth=None,
-        min_samples_leaf=1, n_jobs=-1, random_state=42
+        n_estimators=500,
+        max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        n_jobs=-1,
+        random_state=42
     )
 
-    ensemble = VotingRegressor(estimators=[('gb', gb), ('rf', rf), ('et', et)])
+    ensemble = VotingRegressor(estimators=[('gb', gb), ('rf', rf)])
     ensemble.fit(X_train, y_train)
 
     y_pred = ensemble.predict(X_test)
@@ -243,7 +242,7 @@ st.markdown("""
 <div class="app-header">
     <span class="app-icon">⚡</span>
     <div class="app-title">Electric Bill Predictor</div>
-    <div class="app-subtitle">Ensemble Model · RF + GBM + Extra Trees · AI 5.0</div>
+    <div class="app-subtitle">Ensemble Model · Random Forest + Gradient Boosting · AI 5.0</div>
 </div>
 <div class="divider"></div>
 """, unsafe_allow_html=True)
@@ -256,7 +255,7 @@ st.markdown(f"""
         <div class="stat-label">Instances</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">17</div>
+        <div class="stat-value">7</div>
         <div class="stat-label">Features</div>
     </div>
     <div class="stat-card">
@@ -264,7 +263,7 @@ st.markdown(f"""
         <div class="stat-label">Accuracy (R²)</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">3,000</div>
+        <div class="stat-value">1000</div>
         <div class="stat-label">Trees</div>
     </div>
 </div>
@@ -295,16 +294,11 @@ wm_enc = 1 if washing_machine == "Yes" else 0
 # ── Predict ──
 if st.button("⚡ PREDICT MONTHLY BILL"):
 
-    total_hours        = ac_hours + tv_hours + lights_hours
-    ac_x_people        = ac_hours * num_people
-    appliance_density  = num_appliances / num_people
-    ref_x_people       = num_ref * num_people
-    ac_sq              = ac_hours ** 2
-    appliance_x_ac     = num_appliances * ac_hours
-    wm_x_people        = wm_enc * num_people
-    lights_x_appliance = lights_hours * num_appliances
-    tv_x_people        = tv_hours * num_people
-    ref_x_ac           = num_ref * ac_hours
+    # Build input with same engineered features
+    total_hours       = ac_hours + tv_hours + lights_hours
+    ac_x_people       = ac_hours * num_people
+    appliance_density = num_appliances / num_people
+    ref_x_people      = num_ref * num_people
 
     input_data = pd.DataFrame([{
         "Num_Appliances":        num_appliances,
@@ -318,22 +312,16 @@ if st.button("⚡ PREDICT MONTHLY BILL"):
         "Total_Hours":           total_hours,
         "Appliance_Density":     appliance_density,
         "Ref_x_People":          ref_x_people,
-        "AC_sq":                 ac_sq,
-        "Appliance_x_AC":        appliance_x_ac,
-        "WM_x_People":           wm_x_people,
-        "Lights_x_Appliance":    lights_x_appliance,
-        "TV_x_People":           tv_x_people,
-        "Ref_x_AC":              ref_x_ac,
     }])
 
     predicted_bill = model.predict(input_data)[0]
 
     # Confidence from RF sub-model tree variance
-    rf_model   = model.estimators_[1]
+    rf_model   = model.estimators_[1]  # RandomForest part
     tree_preds = np.array([tree.predict(input_data.values)[0] for tree in rf_model.estimators_])
     std_dev    = tree_preds.std()
     cv         = (std_dev / predicted_bill) * 100
-    confidence = max(0, min(100, 100 - (cv * 0.6)))
+    confidence = max(0, min(100, 100 - (cv * 0.6)))  # scaled for higher display
 
     low  = predicted_bill - std_dev
     high = predicted_bill + std_dev
